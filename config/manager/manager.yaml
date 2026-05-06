@@ -1,0 +1,107 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hybrid-autoscaler-system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: hybrid-autoscaler
+    app.kubernetes.io/instance: hybrid-autoscaler
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hybrid-autoscaler-controller-manager
+  namespace: hybrid-autoscaler-system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: hybrid-autoscaler
+    app.kubernetes.io/instance: hybrid-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: hybrid-autoscaler-controller
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: manager
+          image: hybrid-autoscaler:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /manager
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 8080
+              name: metrics
+              protocol: TCP
+            - containerPort: 8081
+              name: health
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hybrid-autoscaler-controller-manager-metrics-service
+  namespace: hybrid-autoscaler-system
+  labels:
+    control-plane: controller-manager
+spec:
+  ports:
+    - name: metrics
+      port: 8080
+      protocol: TCP
+      targetPort: metrics
+  selector:
+    control-plane: controller-manager
+---
+# PodDisruptionBudget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hybrid-autoscaler-controller-manager-pdb
+  namespace: hybrid-autoscaler-system
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      control-plane: controller-manager

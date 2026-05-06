@@ -1,0 +1,271 @@
+---
+# Example 1: Basic HybridAutoscaler with CPU-based scaling
+apiVersion: autoscaling.hybridautoscaler.io/v1alpha1
+kind: HybridAutoscaler
+metadata:
+  name: my-app-basic
+  namespace: default
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  
+  horizontal:
+    minReplicas: 2
+    maxReplicas: 10
+    metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 70
+  
+  vertical:
+    updatePolicy:
+      updateMode: Auto
+    resourcePolicy:
+      containerPolicies:
+        - containerName: "*"
+          minAllowed:
+            cpu: 100m
+            memory: 128Mi
+          maxAllowed:
+            cpu: 4
+            memory: 8Gi
+
+---
+# Example 2: Advanced HybridAutoscaler with custom metrics and coordination
+apiVersion: autoscaling.hybridautoscaler.io/v1alpha1
+kind: HybridAutoscaler
+metadata:
+  name: api-gateway-ha
+  namespace: production
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  
+  horizontal:
+    minReplicas: 3
+    maxReplicas: 50
+    metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 60
+      - type: Resource
+        resource:
+          name: memory
+          target:
+            type: Utilization
+            averageUtilization: 75
+      - type: External
+        external:
+          metric:
+            name: requests_per_second
+            selector:
+              matchLabels:
+                app: api-gateway
+          target:
+            type: AverageValue
+            averageValue: "1000"
+  
+  vertical:
+    updatePolicy:
+      updateMode: Auto
+      minReplicas: 2
+      evictionRequirements:
+        - resources: [cpu, memory]
+          changeRequirement: TargetHigherThanRequests
+    resourcePolicy:
+      containerPolicies:
+        - containerName: api-gateway
+          minAllowed:
+            cpu: 250m
+            memory: 256Mi
+          maxAllowed:
+            cpu: 8
+            memory: 16Gi
+          controlledResources: [cpu, memory]
+          controlledValues: RequestsAndLimits
+        - containerName: sidecar-proxy
+          mode: "Off"
+  
+  coordination:
+    strategy: Balanced
+    stabilizationWindowSeconds: 300
+    verticalScaleUpThreshold: "0.9"
+    verticalScaleDownThreshold: "0.5"
+    resourceBuffer: 15
+    cooldownPeriods:
+      scaleUpSeconds: 30
+      scaleDownSeconds: 300
+      verticalScaleUpSeconds: 120
+      verticalScaleDownSeconds: 600
+  
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+
+---
+# Example 3: VerticalFirst strategy for memory-intensive workloads
+apiVersion: autoscaling.hybridautoscaler.io/v1alpha1
+kind: HybridAutoscaler
+metadata:
+  name: ml-inference-ha
+  namespace: ml-platform
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ml-inference
+  
+  horizontal:
+    minReplicas: 2
+    maxReplicas: 20
+    metrics:
+      - type: Resource
+        resource:
+          name: memory
+          target:
+            type: Utilization
+            averageUtilization: 80
+  
+  vertical:
+    updatePolicy:
+      updateMode: Auto
+      minReplicas: 1
+    resourcePolicy:
+      containerPolicies:
+        - containerName: inference-server
+          minAllowed:
+            cpu: 1
+            memory: 2Gi
+          maxAllowed:
+            cpu: 16
+            memory: 64Gi
+          controlledResources: [cpu, memory]
+  
+  coordination:
+    strategy: VerticalFirst
+    stabilizationWindowSeconds: 600
+    resourceBuffer: 20
+    cooldownPeriods:
+      scaleUpSeconds: 60
+      scaleDownSeconds: 600
+      verticalScaleUpSeconds: 300
+      verticalScaleDownSeconds: 900
+
+---
+# Example 4: HorizontalFirst for web services
+apiVersion: autoscaling.hybridautoscaler.io/v1alpha1
+kind: HybridAutoscaler
+metadata:
+  name: web-frontend-ha
+  namespace: web
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-frontend
+  
+  horizontal:
+    minReplicas: 5
+    maxReplicas: 100
+    metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 50
+  
+  vertical:
+    updatePolicy:
+      updateMode: Initial
+    resourcePolicy:
+      containerPolicies:
+        - containerName: "*"
+          minAllowed:
+            cpu: 100m
+            memory: 128Mi
+          maxAllowed:
+            cpu: 2
+            memory: 2Gi
+  
+  coordination:
+    strategy: HorizontalFirst
+    horizontalPriority: true
+    cooldownPeriods:
+      scaleUpSeconds: 15
+      scaleDownSeconds: 120
+
+---
+# Example 5: StatefulSet with careful vertical scaling
+apiVersion: autoscaling.hybridautoscaler.io/v1alpha1
+kind: HybridAutoscaler
+metadata:
+  name: postgres-ha
+  namespace: database
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: postgres
+  
+  horizontal:
+    minReplicas: 3
+    maxReplicas: 7
+    metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 70
+  
+  vertical:
+    updatePolicy:
+      updateMode: Auto
+      minReplicas: 2
+    resourcePolicy:
+      containerPolicies:
+        - containerName: postgres
+          minAllowed:
+            cpu: 500m
+            memory: 1Gi
+          maxAllowed:
+            cpu: 8
+            memory: 32Gi
+          controlledResources: [cpu, memory]
+          controlledValues: RequestsOnly
+  
+  coordination:
+    strategy: Balanced
+    stabilizationWindowSeconds: 900
+    resourceBuffer: 25
+    cooldownPeriods:
+      scaleUpSeconds: 120
+      scaleDownSeconds: 900
+      verticalScaleUpSeconds: 600
+      verticalScaleDownSeconds: 1800

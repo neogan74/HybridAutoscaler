@@ -1,0 +1,178 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hybrid-autoscaler-controller
+  namespace: hybrid-autoscaler-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hybrid-autoscaler-manager-role
+rules:
+  # HybridAutoscaler resources
+  - apiGroups:
+      - autoscaling.hybridautoscaler.io
+    resources:
+      - hybridautoscalers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - autoscaling.hybridautoscaler.io
+    resources:
+      - hybridautoscalers/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - autoscaling.hybridautoscaler.io
+    resources:
+      - hybridautoscalers/finalizers
+    verbs:
+      - update
+
+  # Apps resources for scaling targets
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+      - statefulsets
+      - replicasets
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+      - patch
+  - apiGroups:
+      - apps
+    resources:
+      - deployments/scale
+      - statefulsets/scale
+      - replicasets/scale
+    verbs:
+      - get
+      - update
+      - patch
+
+  # Pods for metrics collection and eviction
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+      - delete
+
+  # Events for recording scaling actions
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+
+  # Metrics API
+  - apiGroups:
+      - metrics.k8s.io
+    resources:
+      - pods
+      - nodes
+    verbs:
+      - get
+      - list
+
+  # Custom metrics (if using Prometheus adapter)
+  - apiGroups:
+      - custom.metrics.k8s.io
+    resources:
+      - "*"
+    verbs:
+      - get
+      - list
+
+  # External metrics
+  - apiGroups:
+      - external.metrics.k8s.io
+    resources:
+      - "*"
+    verbs:
+      - get
+      - list
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hybrid-autoscaler-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hybrid-autoscaler-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: hybrid-autoscaler-controller
+    namespace: hybrid-autoscaler-system
+---
+# Leader election role (namespace-scoped)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hybrid-autoscaler-leader-election-role
+  namespace: hybrid-autoscaler-system
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hybrid-autoscaler-leader-election-rolebinding
+  namespace: hybrid-autoscaler-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hybrid-autoscaler-leader-election-role
+subjects:
+  - kind: ServiceAccount
+    name: hybrid-autoscaler-controller
+    namespace: hybrid-autoscaler-system
