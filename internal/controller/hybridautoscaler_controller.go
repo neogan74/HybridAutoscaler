@@ -13,11 +13,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	autoscalingv1alpha1 "github.com/neogan74/hybridautoscaler/api/v1alpha1"
 	"github.com/neogan74/hybridautoscaler/internal/actuator"
@@ -32,6 +35,9 @@ const (
 
 	// MaxScalingHistorySize is the maximum number of scaling events to keep in status
 	MaxScalingHistorySize = 10
+
+	// targetRefIndexField indexes HybridAutoscaler resources by target kind/name.
+	targetRefIndexField = ".spec.targetRef"
 )
 
 // HybridAutoscalerReconciler reconciles a HybridAutoscaler object
@@ -109,13 +115,12 @@ func (r *HybridAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	currentState, err := r.getCurrentState(ctx, ha)
 	if err != nil {
 		logger.Error(err, "Failed to get current state")
-		r.setCondition(ha, metav1.Condition{
+		if err := r.updateCondition(ctx, ha, metav1.Condition{
 			Type:    "Ready",
 			Status:  metav1.ConditionFalse,
 			Reason:  "TargetNotFound",
 			Message: fmt.Sprintf("Failed to get target: %v", err),
-		})
-		if err := r.Status().Update(ctx, ha); err != nil {
+		}); err != nil {
 			logger.Error(err, "Failed to update status")
 		}
 		return ctrl.Result{RequeueAfter: r.ReconcileInterval}, nil
@@ -243,6 +248,32 @@ func (r *HybridAutoscalerReconciler) updateStatus(
 	recommendations *recommender.Recommendations,
 	result *actuator.ApplyResult,
 ) error {
+	var updatedStatus autoscalingv1alpha1.HybridAutoscalerStatus
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &autoscalingv1alpha1.HybridAutoscaler{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(ha), latest); err != nil {
+			return err
+		}
+
+		r.populateStatus(latest, currentState, collectedMetrics, recommendations, result)
+		updatedStatus = latest.Status
+		return r.Status().Update(ctx, latest)
+	})
+	if err != nil {
+		return err
+	}
+
+	ha.Status = updatedStatus
+	return nil
+}
+
+func (r *HybridAutoscalerReconciler) populateStatus(
+	ha *autoscalingv1alpha1.HybridAutoscaler,
+	currentState *coordinator.CurrentState,
+	collectedMetrics *metrics.CollectedMetrics,
+	recommendations *recommender.Recommendations,
+	result *actuator.ApplyResult,
+) {
 	// Update replicas
 	ha.Status.CurrentReplicas = currentState.Replicas
 	ha.Status.DesiredReplicas = currentState.Replicas
@@ -385,8 +416,6 @@ func (r *HybridAutoscalerReconciler) updateStatus(
 			}
 		}
 	}
-
-	return r.Status().Update(ctx, ha)
 }
 
 // setCondition sets or updates a condition in the status
@@ -409,14 +438,92 @@ func (r *HybridAutoscalerReconciler) setCondition(ha *autoscalingv1alpha1.Hybrid
 	ha.Status.Conditions = append(ha.Status.Conditions, condition)
 }
 
+func (r *HybridAutoscalerReconciler) updateCondition(ctx context.Context, ha *autoscalingv1alpha1.HybridAutoscaler, condition metav1.Condition) error {
+	var updatedStatus autoscalingv1alpha1.HybridAutoscalerStatus
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &autoscalingv1alpha1.HybridAutoscaler{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(ha), latest); err != nil {
+			return err
+		}
+
+		r.setCondition(latest, condition)
+		updatedStatus = latest.Status
+		return r.Status().Update(ctx, latest)
+	})
+	if err != nil {
+		return err
+	}
+
+	ha.Status = updatedStatus
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager
 func (r *HybridAutoscalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &autoscalingv1alpha1.HybridAutoscaler{}, targetRefIndexField, func(rawObj client.Object) []string {
+		ha := rawObj.(*autoscalingv1alpha1.HybridAutoscaler)
+		return []string{targetRefIndexValue(ha.Spec.TargetRef.Kind, ha.Spec.TargetRef.Name)}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&autoscalingv1alpha1.HybridAutoscaler{}).
+		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.requestsForTarget)).
+		Watches(&appsv1.StatefulSet{}, handler.EnqueueRequestsFromMapFunc(r.requestsForTarget)).
+		Watches(&appsv1.ReplicaSet{}, handler.EnqueueRequestsFromMapFunc(r.requestsForTarget)).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 10,
 		}).
 		Complete(r)
+}
+
+func (r *HybridAutoscalerReconciler) requestsForTarget(ctx context.Context, obj client.Object) []reconcile.Request {
+	kind, ok := targetKindForObject(obj)
+	if !ok {
+		return nil
+	}
+
+	haList := &autoscalingv1alpha1.HybridAutoscalerList{}
+	if err := r.List(ctx, haList,
+		client.InNamespace(obj.GetNamespace()),
+		client.MatchingFields{targetRefIndexField: targetRefIndexValue(kind, obj.GetName())},
+	); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list HybridAutoscalers for target",
+			"kind", kind,
+			"namespace", obj.GetNamespace(),
+			"name", obj.GetName(),
+		)
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(haList.Items))
+	for _, ha := range haList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: ha.Namespace,
+				Name:      ha.Name,
+			},
+		})
+	}
+	return requests
+}
+
+func targetKindForObject(obj client.Object) (string, bool) {
+	switch obj.(type) {
+	case *appsv1.Deployment:
+		return "Deployment", true
+	case *appsv1.StatefulSet:
+		return "StatefulSet", true
+	case *appsv1.ReplicaSet:
+		return "ReplicaSet", true
+	default:
+		return "", false
+	}
+}
+
+func targetRefIndexValue(kind, name string) string {
+	return fmt.Sprintf("%s/%s", kind, name)
 }
 
 func int32Ptr(i int32) *int32 {

@@ -179,6 +179,10 @@ func (c *Coordinator) Coordinate(
 	collectedMetrics *metrics.CollectedMetrics,
 ) (*Decision, error) {
 	logger := log.FromContext(ctx)
+	if currentState == nil {
+		return nil, fmt.Errorf("current state is nil")
+	}
+
 	key := fmt.Sprintf("%s/%s", ha.Namespace, ha.Name)
 
 	strategy := c.getStrategy(ha)
@@ -187,17 +191,29 @@ func (c *Coordinator) Coordinate(
 	c.recordRecommendation(key, recommendations)
 
 	// Get stabilized recommendations
-	stabilizedHRec := c.getStabilizedHorizontalRec(key, ha, recommendations.Horizontal)
-	stabilizedVRec := recommendations.Vertical // Vertical doesn't need stabilization in the same way
+	var hRec *recommender.HorizontalRecommendation
+	var stabilizedVRec *recommender.VerticalRecommendation
+	if recommendations != nil {
+		hRec = recommendations.Horizontal
+		stabilizedVRec = recommendations.Vertical // Vertical doesn't need stabilization in the same way
+	}
+	stabilizedHRec := c.getStabilizedHorizontalRec(key, ha, hRec)
 
 	// Check cooldowns
 	canScaleHorizontal := c.canScaleHorizontally(key, ha, stabilizedHRec, currentState)
 	canScaleVertical := c.canScaleVertically(key, ha, stabilizedVRec, currentState)
 
+	var desiredReplicas int32
+	if stabilizedHRec != nil {
+		desiredReplicas = stabilizedHRec.DesiredReplicas
+	} else {
+		desiredReplicas = currentState.Replicas
+	}
+
 	logger.V(1).Info("Coordination inputs",
 		"strategy", strategy,
 		"currentReplicas", currentState.Replicas,
-		"desiredReplicas", stabilizedHRec.DesiredReplicas,
+		"desiredReplicas", desiredReplicas,
 		"canScaleHorizontal", canScaleHorizontal,
 		"canScaleVertical", canScaleVertical,
 	)
@@ -237,6 +253,10 @@ func (c *Coordinator) getStrategy(ha *autoscalingv1alpha1.HybridAutoscaler) auto
 
 // recordRecommendation records a recommendation for stabilization
 func (c *Coordinator) recordRecommendation(key string, rec *recommender.Recommendations) {
+	if rec == nil {
+		return
+	}
+
 	c.cooldownTracker.mu.Lock()
 	defer c.cooldownTracker.mu.Unlock()
 
@@ -542,7 +562,7 @@ func (c *Coordinator) verticalFirstDecision(
 
 	// Check if pods are resource-constrained (high utilization)
 	resourceConstrained := false
-	if collected.Aggregated != nil {
+	if collected != nil && collected.Aggregated != nil {
 		resourceConstrained = collected.Aggregated.AverageCPUUtilization > c.config.VerticalScaleUpThreshold*100 ||
 			collected.Aggregated.AverageMemoryUtilization > c.config.VerticalScaleUpThreshold*100
 	}

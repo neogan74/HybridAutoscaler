@@ -90,6 +90,11 @@ func (a *Actuator) Apply(
 	logger := log.FromContext(ctx)
 	result := &ApplyResult{}
 
+	if decision == nil {
+		logger.V(1).Info("No scaling decision available")
+		return result, nil
+	}
+
 	if a.config.DryRun {
 		logger.Info("DryRun mode: would apply decision", "decision", decision)
 		return result, nil

@@ -126,6 +126,17 @@ func TestGenerateRecommendationsDefaultCPUHorizontal(t *testing.T) {
 	}
 }
 
+func TestGenerateRecommendationsNilMetricsReturnsError(t *testing.T) {
+	r := NewRecommender(DefaultRecommenderConfig())
+	rec, err := r.GenerateRecommendations(context.Background(), testHybridAutoscaler(), nil, 3)
+	if err == nil {
+		t.Fatal("expected error for nil metrics")
+	}
+	if rec != nil {
+		t.Fatalf("recommendations = %#v, want nil", rec)
+	}
+}
+
 func TestGenerateHorizontalRecommendationChoosesMetricWithMostReplicas(t *testing.T) {
 	r := NewRecommender(DefaultRecommenderConfig())
 	ha := testHybridAutoscaler()

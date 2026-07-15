@@ -476,6 +476,52 @@ func TestPredictiveStrategy(t *testing.T) {
 	}
 }
 
+func TestCoordinateNilRecommendationsNoop(t *testing.T) {
+	ctx := context.Background()
+	coord := newTestCoordinator()
+	ha := newTestHybridAutoscaler(autoscalingv1alpha1.Balanced)
+	currentState := newCurrentState(3, map[string]corev1.ResourceRequirements{})
+
+	decision, err := coord.Coordinate(ctx, ha, currentState, nil, nil)
+	if err != nil {
+		t.Fatalf("Coordinate failed: %v", err)
+	}
+	if decision.Priority != PriorityNone {
+		t.Fatalf("Priority = %q, want %q", decision.Priority, PriorityNone)
+	}
+	if decision.HorizontalAction.ShouldScale || decision.VerticalAction.ShouldScale {
+		t.Fatal("nil recommendations should not produce scaling actions")
+	}
+}
+
+func TestVerticalFirstNilMetricsDoesNotPanic(t *testing.T) {
+	ctx := context.Background()
+	coord := newTestCoordinator()
+	ha := newTestHybridAutoscaler(autoscalingv1alpha1.VerticalFirst)
+	currentState := newCurrentState(3, map[string]corev1.ResourceRequirements{
+		"app": {
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
+		},
+	})
+	recommendations := newRecommendations(newHorizontalRec(5, 0.9), newVerticalRec(map[string]corev1.ResourceList{
+		"app": {
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}, 0.9))
+
+	decision, err := coord.Coordinate(ctx, ha, currentState, recommendations, nil)
+	if err != nil {
+		t.Fatalf("Coordinate failed: %v", err)
+	}
+	if !decision.HorizontalAction.ShouldScale {
+		t.Fatal("expected horizontal fallback when metrics are unavailable")
+	}
+}
+
 // TestCooldownEnforcement tests that cooldown periods prevent rapid scaling
 func TestCooldownEnforcement(t *testing.T) {
 	ctx := context.Background()

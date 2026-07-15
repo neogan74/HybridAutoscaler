@@ -175,6 +175,10 @@ func NewRecommender(config RecommenderConfig) *Recommender {
 
 // AddMetrics adds collected metrics to history
 func (r *Recommender) AddMetrics(collected *metrics.CollectedMetrics) {
+	if collected == nil {
+		return
+	}
+
 	r.historyLock.Lock()
 	defer r.historyLock.Unlock()
 
@@ -246,6 +250,13 @@ func (r *Recommender) GenerateRecommendations(
 	currentReplicas int32,
 ) (*Recommendations, error) {
 	logger := log.FromContext(ctx)
+
+	if collected == nil {
+		return nil, fmt.Errorf("collected metrics are nil")
+	}
+	if collected.Aggregated == nil {
+		return nil, fmt.Errorf("aggregated metrics are nil")
+	}
 
 	// Add current metrics to history
 	r.AddMetrics(collected)
@@ -697,6 +708,10 @@ func sortWeightedValues(values []weightedValue) {
 
 // calculateHorizontalConfidence calculates confidence in horizontal recommendation
 func (r *Recommender) calculateHorizontalConfidence(collected *metrics.CollectedMetrics) float64 {
+	if collected == nil || collected.Aggregated == nil {
+		return 0
+	}
+
 	// Confidence based on sample count and variance
 	if collected.Aggregated.ReadyPods == 0 {
 		return 0
